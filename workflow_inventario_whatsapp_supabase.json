@@ -1,0 +1,1511 @@
+{
+  "name": "Inventario Empresarial - WhatsApp + Gemini + Redis + Supabase",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Setup rapido\\n\\nEnv vars: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `WHATSAPP_API_BASE_URL`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_TOKEN`, `WHATSAPP_APP_SECRET`, `INVENTORY_MANAGER_PHONE`.\\n\\nConecte a credencial do Redis em todos os nos Redis e a credencial do Gemini no no de modelo.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "note_setup",
+      "name": "Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -560
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "inventario/webhook",
+        "authentication": "none",
+        "responseMode": "onReceived",
+        "options": {
+          "responseCode": 200,
+          "noResponseBody": true,
+          "binaryData": true,
+          "binaryPropertyName": "rawBody"
+        }
+      },
+      "id": "webhook_whatsapp",
+      "name": "Webhook - WhatsApp",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const item = $input.first();\\nconst headers = item.json.headers ?? {};\\nconst signatureHeader = headers['x-hub-signature-256'] ?? headers['X-Hub-Signature-256'] ?? null;\\nconst binaryData = item.binary?.rawBody?.data;\\nconst rawBody = binaryData ? Buffer.from(binaryData, 'base64').toString('utf8') : JSON.stringify(item.json.body ?? item.json);\\nconst appSecret = process.env.WHATSAPP_APP_SECRET || '';\\nlet signatureValid = null;\\n\\nif (signatureHeader && appSecret) {\\n  const encoder = new TextEncoder();\\n  const cryptoKey = await crypto.subtle.importKey('raw', encoder.encode(appSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);\\n  const signatureBuffer = await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(rawBody));\\n  const expected = Array.from(new Uint8Array(signatureBuffer)).map((byte) => byte.toString(16).padStart(2, '0')).join('');\\n  signatureValid = `sha256=${expected}` === signatureHeader;\\n  if (!signatureValid) {\\n    return [{ json: { shouldProcess: false, reason: 'invalid_signature', signatureValid } }];\\n  }\\n}\\n\\nlet payload;\\ntry {\\n  payload = JSON.parse(rawBody);\\n} catch {\\n  payload = item.json.body ?? item.json;\\n}\\n\\nconst message = payload?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];\\nif (!message) {\\n  return [{ json: { shouldProcess: false, reason: 'no_message_event', signatureValid, payload } }];\\n}\\n\\nconst messageText = message?.text?.body ?? message?.image?.caption ?? message?.document?.caption ?? '';\\n\\nreturn [{\\n  json: {\\n    shouldProcess: true,\\n    signatureValid,\\n    phone: message.from ?? null,\\n    messageId: message.id ?? null,\\n    messageType: message.type ?? 'unknown',\\n    messageText,\\n    receivedAt: new Date().toISOString(),\\n    payload\\n  }\\n}];"
+      },
+      "id": "code_parse_webhook",
+      "name": "Verificar e Extrair Webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "valid-message-condition",
+              "leftValue": "={{ $json.shouldProcess }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if_valid_message",
+      "name": "Tem Mensagem Valida?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        540,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "value",
+        "key": "={{ 'inv:session:' + $('Verificar e Extrair Webhook').first().json.phone }}",
+        "keyType": "string",
+        "options": {}
+      },
+      "id": "redis_get_session",
+      "name": "Redis - Sessao GET",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        800,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "value",
+        "key": "={{ 'inv:step:' + $('Verificar e Extrair Webhook').first().json.phone }}",
+        "keyType": "string",
+        "options": {}
+      },
+      "id": "redis_get_step",
+      "name": "Redis - Etapa GET",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "value",
+        "key": "inv:cache:produtos",
+        "keyType": "string",
+        "options": {}
+      },
+      "id": "redis_get_cache",
+      "name": "Redis - Cache Produtos GET",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1280,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cache-hit-condition",
+              "leftValue": "={{ !!$json.value }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if_cache_hit",
+      "name": "Cache de Produtos Existe?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1520,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ (($env.SUPABASE_URL.endsWith('/')) ? $env.SUPABASE_URL.slice(0, -1) : $env.SUPABASE_URL) + '/rest/v1/produtos' }}",
+        "authentication": "none",
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "select",
+              "value": "id,nome,sku,unidade,categoria"
+            },
+            {
+              "name": "ativo",
+              "value": "eq.true"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http_get_products",
+      "name": "Supabase - Buscar Produtos Ativos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1760,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const rawItems = $input.all().map((item) => item.json);\\nconst produtos = rawItems.length === 1 && Array.isArray(rawItems[0]) ? rawItems[0] : rawItems;\\nreturn [{ json: { produtos, cache_json: JSON.stringify(produtos) } }];"
+      },
+      "id": "code_prepare_cache",
+      "name": "Preparar Cache Produtos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "inv:cache:produtos",
+        "value": "={{ $json.cache_json }}",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 300
+      },
+      "id": "redis_set_cache",
+      "name": "Redis - Cache Produtos SET",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        2240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const entrada = $('Verificar e Extrair Webhook').first().json;\\nlet sessao = null;\\nlet etapa = null;\\nlet cacheBruto = null;\\nlet produtos = [];\\n\\ntry {\\n  cacheBruto = $('Redis - Cache Produtos GET').first().json.value ?? null;\\n} catch {}\\n\\ntry {\\n  etapa = $('Redis - Etapa GET').first().json.value ?? null;\\n} catch {}\\n\\ntry {\\n  const sessionRaw = $('Redis - Sessao GET').first().json.value ?? null;\\n  sessao = sessionRaw ? JSON.parse(sessionRaw) : null;\\n} catch {\\n  sessao = null;\\n}\\n\\nif (cacheBruto) {\\n  try {\\n    produtos = JSON.parse(cacheBruto);\\n  } catch {\\n    produtos = [];\\n  }\\n}\\n\\nif (!produtos.length) {\\n  try {\\n    const preparados = $('Preparar Cache Produtos').first().json.produtos;\\n    if (Array.isArray(preparados)) {\\n      produtos = preparados;\\n    }\\n  } catch {}\\n}\\n\\nconst listaProdutos = produtos.length ? produtos.map((produto) => `${produto.nome} (id: ${produto.id}, sku: ${produto.sku || '-'}, un: ${produto.unidade || 'un'}, categoria: ${produto.categoria || '-'})`).join('\\\\n') : 'Nenhum produto cadastrado.';\\n\\nreturn [{\\n  json: {\\n    telefone: entrada.phone,\\n    mensagem: entrada.messageText,\\n    tipo_mensagem: entrada.messageType,\\n    produtos_cadastrados: listaProdutos,\\n    produtos_array: produtos,\\n    contexto_redis: sessao,\\n    etapa_redis: etapa,\\n    recebido_em: entrada.receivedAt\\n  }\\n}];"
+      },
+      "id": "code_build_ai_context",
+      "name": "Montar Contexto IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2480,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.mensagem }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "=Voce e um agente especialista em controle de estoque para lojas e mercados brasileiros. Seu papel e interpretar mensagens de operadores recebidas via WhatsApp e devolver uma estrutura JSON valida para movimentacoes de estoque.\\n\\nLISTA DE PRODUTOS CADASTRADOS:\\n{{$json.produtos_cadastrados}}\\n\\nCONTEXTO ANTERIOR DA CONVERSA:\\n{{ $json.contexto_redis ? JSON.stringify($json.contexto_redis) : 'null' }}\\n\\nREGRAS:\\n1. Identifique a operacao: \\\"entrada\\\", \\\"saida\\\" ou \\\"ajuste\\\".\\n2. Para cada item citado, extraia: produto_id, nome_original, nome_matched, produto_novo, quantidade, unidade, fornecedor e numero_nfe.\\n3. Use fuzzy match contra a lista de produtos cadastrados. Se houver alta confianca, reutilize o produto_id correspondente. Se nao houver, marque produto_novo como true e produto_id como null.\\n4. Se faltar quantidade, operacao ou contexto suficiente, responda com status \\\"aguardando_info\\\" e faca uma pergunta objetiva. Nao invente dados.\\n5. Se a mensagem atual for uma confirmacao como \\\"sim\\\", \\\"confirma\\\", \\\"pode salvar\\\" ou equivalente, use o contexto anterior para devolver status \\\"confirmado\\\".\\n6. Se a mensagem atual for um cancelamento como \\\"nao\\\", \\\"cancela\\\" ou equivalente, devolva status \\\"cancelado\\\".\\n7. Mantenha a mensagem_resposta curta, natural e pronta para ser enviada ao operador.\\n8. Responda apenas com os campos definidos no schema. Nao inclua markdown, comentarios ou texto fora do JSON.\\n9. Quando a operacao for \\\"ajuste\\\", trate a quantidade como delta assinado do estoque.\\n10. Se houver multiplos itens, devolva todos no array itens.\\n\\nEXEMPLOS:\\n- \\\"chegou 3 cx de leite ninho 400g\\\" => status \\\"pendente\\\", operacao \\\"entrada\\\".\\n- \\\"saiu 12 refrigerantes\\\" => status \\\"pendente\\\", operacao \\\"saida\\\".\\n- \\\"sim pode salvar\\\" => status \\\"confirmado\\\" usando o contexto anterior.\\n- \\\"nao cancela\\\" => status \\\"cancelado\\\".",
+          "maxIterations": 4
+        }
+      },
+      "id": "ai_inventory_agent",
+      "name": "IA - Agente de Inventario",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        2720,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.0-flash",
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "gemini_chat_model",
+      "name": "Gemini - Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        2720,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"required\": [\"status\", \"mensagem_resposta\", \"operacao\", \"itens\"],\n  \"properties\": {\n    \"status\": {\n      \"type\": \"string\",\n      \"enum\": [\"pendente\", \"confirmado\", \"cancelado\", \"aguardando_info\"]\n    },\n    \"mensagem_resposta\": {\n      \"type\": \"string\"\n    },\n    \"operacao\": {\n      \"type\": [\"string\", \"null\"],\n      \"enum\": [\"entrada\", \"saida\", \"ajuste\", null]\n    },\n    \"itens\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"required\": [\"produto_id\", \"nome_original\", \"nome_matched\", \"produto_novo\", \"quantidade\", \"unidade\", \"fornecedor\", \"numero_nfe\"],\n        \"properties\": {\n          \"produto_id\": {\n            \"type\": [\"string\", \"null\"]\n          },\n          \"nome_original\": {\n            \"type\": \"string\"\n          },\n          \"nome_matched\": {\n            \"type\": [\"string\", \"null\"]\n          },\n          \"produto_novo\": {\n            \"type\": \"boolean\"\n          },\n          \"quantidade\": {\n            \"type\": \"number\"\n          },\n          \"unidade\": {\n            \"type\": \"string\"\n          },\n          \"fornecedor\": {\n            \"type\": [\"string\", \"null\"]\n          },\n          \"numero_nfe\": {\n            \"type\": [\"string\", \"null\"]\n          }\n        }\n      }\n    }\n  }\n}",
+        "autoFix": true
+      },
+      "id": "output_parser_inventory",
+      "name": "Parser - Saida Estruturada Inventario",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        2960,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const contexto = $('Montar Contexto IA').first().json;\\nlet saida = $json.output ?? $json;\\n\\nif (saida && typeof saida === 'object' && saida.output && typeof saida.output === 'object') {\\n  saida = saida.output;\\n}\\n\\nif (typeof saida === 'string') {\\n  try {\\n    saida = JSON.parse(saida);\\n  } catch (error) {\\n    throw new Error('Nao foi possivel converter a saida da IA em JSON: ' + error.message);\\n  }\\n}\\n\\nif (!saida || typeof saida !== 'object') {\\n  throw new Error('A IA nao retornou um objeto valido.');\\n}\\n\\nconst contextoSessao = contexto.contexto_redis && typeof contexto.contexto_redis === 'object' ? contexto.contexto_redis : null;\\nconst status = saida.status || 'aguardando_info';\\nlet itens = Array.isArray(saida.itens) ? saida.itens : [];\\n\\nif (status === 'confirmado' && !itens.length && Array.isArray(contextoSessao?.itens)) {\\n  itens = contextoSessao.itens;\\n}\\n\\nconst operacao = saida.operacao ?? contextoSessao?.operacao ?? null;\\nconst mensagemPadrao = status === 'cancelado' ? 'Movimentacao cancelada.' : status === 'confirmado' ? 'Movimentacao confirmada e registrada.' : status === 'pendente' ? 'Confirme se deseja salvar esta movimentacao.' : 'Preciso de mais informacoes para continuar.';\\n\\nconst resultado = {\\n  status,\\n  mensagem_resposta: saida.mensagem_resposta || mensagemPadrao,\\n  operacao,\\n  itens: itens.map((item) => ({\\n    produto_id: item.produto_id ?? null,\\n    nome_original: item.nome_original ?? item.nome_matched ?? '',\\n    nome_matched: item.nome_matched ?? null,\\n    produto_novo: Boolean(item.produto_novo),\\n    quantidade: Number(item.quantidade ?? 0),\\n    unidade: item.unidade ?? 'un',\\n    fornecedor: item.fornecedor ?? null,\\n    numero_nfe: item.numero_nfe ?? null\\n  })),\\n  telefone: contexto.telefone,\\n  mensagem_original: contexto.mensagem\\n};\\n\\nresultado.has_new_product = resultado.itens.some((item) => item.produto_novo || !item.produto_id);\\nresultado.session_payload = {\\n  status: 'pendente',\\n  operacao: resultado.operacao,\\n  itens: resultado.itens,\\n  mensagem_resposta: resultado.mensagem_resposta,\\n  telefone: resultado.telefone\\n};\\n\\nreturn [{ json: resultado }];"
+      },
+      "id": "code_normalize_ai",
+      "name": "Normalizar Resultado IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3200,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "outputKey": "pendente",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "leftValue": "",
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "status-pendente",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "pendente"
+                  }
+                ]
+              }
+            },
+            {
+              "outputKey": "confirmado",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "leftValue": "",
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "status-confirmado",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "confirmado"
+                  }
+                ]
+              }
+            },
+            {
+              "outputKey": "cancelado",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "leftValue": "",
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "status-cancelado",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "cancelado"
+                  }
+                ]
+              }
+            },
+            {
+              "outputKey": "aguardando_info",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "leftValue": "",
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "status-aguardando-info",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "aguardando_info"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "switch_status",
+      "name": "Switch - Status IA",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        3440,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "={{ 'inv:session:' + $('Verificar e Extrair Webhook').first().json.phone }}",
+        "value": "={{ JSON.stringify($('Normalizar Resultado IA').first().json.session_payload) }}",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 600
+      },
+      "id": "redis_set_session_pending",
+      "name": "Redis - Sessao SET Pendente",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3680,
+        -340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "={{ 'inv:step:' + $('Verificar e Extrair Webhook').first().json.phone }}",
+        "value": "confirmando",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 600
+      },
+      "id": "redis_set_step_confirming",
+      "name": "Redis - Etapa SET Confirmando",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3920,
+        -340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.WHATSAPP_API_BASE_URL.endsWith('/')) ? $env.WHATSAPP_API_BASE_URL.slice(0, -1) : $env.WHATSAPP_API_BASE_URL) + '/' + $env.WHATSAPP_PHONE_NUMBER_ID + '/messages' }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.WHATSAPP_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { messaging_product: 'whatsapp', to: $('Normalizar Resultado IA').first().json.telefone, type: 'text', text: { body: $('Normalizar Resultado IA').first().json.mensagem_resposta } } }}",
+        "options": {}
+      },
+      "id": "http_send_reply_pending",
+      "name": "WhatsApp - Resposta Pendente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4160,
+        -340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "={{ 'inv:session:' + $('Verificar e Extrair Webhook').first().json.phone }}",
+        "value": "={{ JSON.stringify($('Normalizar Resultado IA').first().json.session_payload) }}",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 600
+      },
+      "id": "redis_set_session_awaiting",
+      "name": "Redis - Sessao SET Aguardando",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3680,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "={{ 'inv:step:' + $('Verificar e Extrair Webhook').first().json.phone }}",
+        "value": "aguardando",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 600
+      },
+      "id": "redis_set_step_awaiting",
+      "name": "Redis - Etapa SET Aguardando",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3920,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.WHATSAPP_API_BASE_URL.endsWith('/')) ? $env.WHATSAPP_API_BASE_URL.slice(0, -1) : $env.WHATSAPP_API_BASE_URL) + '/' + $env.WHATSAPP_PHONE_NUMBER_ID + '/messages' }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.WHATSAPP_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { messaging_product: 'whatsapp', to: $('Normalizar Resultado IA').first().json.telefone, type: 'text', text: { body: $('Normalizar Resultado IA').first().json.mensagem_resposta } } }}",
+        "options": {}
+      },
+      "id": "http_send_reply_awaiting",
+      "name": "WhatsApp - Resposta Aguardando Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4160,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "key": "={{ 'inv:session:' + $('Verificar e Extrair Webhook').first().json.phone }}"
+      },
+      "id": "redis_delete_session_cancel",
+      "name": "Redis - Sessao DEL Cancelado",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3680,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "key": "={{ 'inv:step:' + $('Verificar e Extrair Webhook').first().json.phone }}"
+      },
+      "id": "redis_delete_step_cancel",
+      "name": "Redis - Etapa DEL Cancelado",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3920,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.WHATSAPP_API_BASE_URL.endsWith('/')) ? $env.WHATSAPP_API_BASE_URL.slice(0, -1) : $env.WHATSAPP_API_BASE_URL) + '/' + $env.WHATSAPP_PHONE_NUMBER_ID + '/messages' }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.WHATSAPP_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { messaging_product: 'whatsapp', to: $('Normalizar Resultado IA').first().json.telefone, type: 'text', text: { body: $('Normalizar Resultado IA').first().json.mensagem_resposta } } }}",
+        "options": {}
+      },
+      "id": "http_send_reply_cancelled",
+      "name": "WhatsApp - Resposta Cancelado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4160,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "new-product-condition",
+              "leftValue": "={{ $json.has_new_product }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if_has_new_product",
+      "name": "Tem Produto Novo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3680,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.WHATSAPP_API_BASE_URL.endsWith('/')) ? $env.WHATSAPP_API_BASE_URL.slice(0, -1) : $env.WHATSAPP_API_BASE_URL) + '/' + $env.WHATSAPP_PHONE_NUMBER_ID + '/messages' }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.WHATSAPP_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { messaging_product: 'whatsapp', to: $('Normalizar Resultado IA').first().json.telefone, type: 'text', text: { body: 'Detectei pelo menos um produto novo sem cadastro. Para evitar inconsistencias, nao gravei a movimentacao. Cadastre o item no catalogo e reenvi e a mensagem.' } } }}",
+        "options": {}
+      },
+      "id": "http_send_reply_new_product",
+      "name": "WhatsApp - Resposta Produto Novo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        3920,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "key": "={{ 'inv:session:' + $('Verificar e Extrair Webhook').first().json.phone }}"
+      },
+      "id": "redis_delete_session_new_product",
+      "name": "Redis - Sessao DEL Produto Novo",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        4160,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "key": "={{ 'inv:step:' + $('Verificar e Extrair Webhook').first().json.phone }}"
+      },
+      "id": "redis_delete_step_new_product",
+      "name": "Redis - Etapa DEL Produto Novo",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        4400,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const data = $('Normalizar Resultado IA').first().json;\\nconst movimentacoes = data.itens.map((item) => ({\\n  produto_id: item.produto_id,\\n  tipo: data.operacao,\\n  quantidade: Number(item.quantidade),\\n  origem: 'whatsapp',\\n  operador: data.telefone,\\n  observacao: item.nome_original || null,\\n  numero_nfe: item.numero_nfe || null\\n})).filter((item) => item.produto_id && item.quantidade);\\n\\nif (!movimentacoes.length) {\\n  throw new Error('Nenhum item confirmado para gravar.');\\n}\\n\\nconst produtoIds = [...new Set(movimentacoes.map((item) => item.produto_id))];\\n\\nreturn [{\\n  json: {\\n    movimentacoes,\\n    produto_ids_csv: produtoIds.join(','),\\n    telefone: data.telefone,\\n    mensagem_resposta: data.mensagem_resposta\\n  }\\n}];"
+      },
+      "id": "code_prepare_movements",
+      "name": "Preparar Movimentacoes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3920,
+        -520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.SUPABASE_URL.endsWith('/')) ? $env.SUPABASE_URL.slice(0, -1) : $env.SUPABASE_URL) + '/rest/v1/movimentacoes' }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $('Preparar Movimentacoes').first().json.movimentacoes }}",
+        "options": {}
+      },
+      "id": "http_insert_movements",
+      "name": "Supabase - Inserir Movimentacoes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4160,
+        -520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.WHATSAPP_API_BASE_URL.endsWith('/')) ? $env.WHATSAPP_API_BASE_URL.slice(0, -1) : $env.WHATSAPP_API_BASE_URL) + '/' + $env.WHATSAPP_PHONE_NUMBER_ID + '/messages' }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.WHATSAPP_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { messaging_product: 'whatsapp', to: $('Normalizar Resultado IA').first().json.telefone, type: 'text', text: { body: $('Normalizar Resultado IA').first().json.mensagem_resposta } } }}",
+        "options": {}
+      },
+      "id": "http_send_reply_confirmed",
+      "name": "WhatsApp - Resposta Confirmado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4400,
+        -660
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "key": "={{ 'inv:session:' + $('Verificar e Extrair Webhook').first().json.phone }}"
+      },
+      "id": "redis_delete_session_confirmed",
+      "name": "Redis - Sessao DEL Confirmado",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        4640,
+        -660
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "key": "={{ 'inv:step:' + $('Verificar e Extrair Webhook').first().json.phone }}"
+      },
+      "id": "redis_delete_step_confirmed",
+      "name": "Redis - Etapa DEL Confirmado",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        4880,
+        -660
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ (($env.SUPABASE_URL.endsWith('/')) ? $env.SUPABASE_URL.slice(0, -1) : $env.SUPABASE_URL) + '/rest/v1/v_itens_criticos' }}",
+        "authentication": "none",
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "select",
+              "value": "produto_id,nome,sku,unidade,estoque_min,quantidade,fornecedor,deficit,tipo_alerta"
+            },
+            {
+              "name": "produto_id",
+              "value": "={{ 'in.(' + $('Preparar Movimentacoes').first().json.produto_ids_csv + ')' }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http_get_critical_items",
+      "name": "Supabase - Buscar Itens Criticos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4400,
+        -420
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ (($env.SUPABASE_URL.endsWith('/')) ? $env.SUPABASE_URL.slice(0, -1) : $env.SUPABASE_URL) + '/rest/v1/alertas_log' }}",
+        "authentication": "none",
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "select",
+              "value": "produto_id,tipo_alerta,referencia_dia"
+            },
+            {
+              "name": "produto_id",
+              "value": "={{ 'in.(' + $('Preparar Movimentacoes').first().json.produto_ids_csv + ')' }}"
+            },
+            {
+              "name": "referencia_dia",
+              "value": "={{ 'eq.' + $now.toISODate() }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http_get_alerts_today",
+      "name": "Supabase - Buscar Alertas Hoje",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4640,
+        -420
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const criticalItems = $('Supabase - Buscar Itens Criticos').all().map((item) => item.json).filter((item) => item && item.produto_id);\\nconst alertItems = $('Supabase - Buscar Alertas Hoje').all().map((item) => item.json).filter((item) => item && item.produto_id);\\nconst existing = new Set(alertItems.map((item) => `${item.produto_id}:${item.tipo_alerta}`));\\nconst managerPhone = process.env.INVENTORY_MANAGER_PHONE || '';\\nconst referenceDay = new Date().toISOString().slice(0, 10);\\nconst freshAlerts = criticalItems.filter((item) => !existing.has(`${item.produto_id}:${item.tipo_alerta}`));\\nconst lines = freshAlerts.map((item) => `- ${item.nome}: atual ${item.quantidade} ${item.unidade || 'un'} | minimo ${item.estoque_min} ${item.unidade || 'un'} | deficit ${item.deficit} ${item.unidade || 'un'}${item.fornecedor ? ' | fornecedor ' + item.fornecedor : ''}`);\\n\\nreturn [{\\n  json: {\\n    send_alert: Boolean(managerPhone) && freshAlerts.length > 0,\\n    manager_phone: managerPhone,\\n    manager_message: `Alerta de estoque critico\\\\n\\\\n${lines.join('\\\\n')}\\\\n\\\\nReferencia: ${referenceDay}`,\\n    alertas_payload: freshAlerts.map((item) => ({\\n      produto_id: item.produto_id,\\n      tipo_alerta: item.tipo_alerta,\\n      destinatario: managerPhone,\\n      referencia_dia: referenceDay\\n    }))\\n  }\\n}];"
+      },
+      "id": "code_build_alerts",
+      "name": "Montar Alertas Criticos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4880,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-alerts-condition",
+              "leftValue": "={{ $json.send_alert }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if_has_alerts",
+      "name": "Ha Alertas Novos?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        5120,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.WHATSAPP_API_BASE_URL.endsWith('/')) ? $env.WHATSAPP_API_BASE_URL.slice(0, -1) : $env.WHATSAPP_API_BASE_URL) + '/' + $env.WHATSAPP_PHONE_NUMBER_ID + '/messages' }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.WHATSAPP_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { messaging_product: 'whatsapp', to: $json.manager_phone, type: 'text', text: { body: $json.manager_message } } }}",
+        "options": {}
+      },
+      "id": "http_send_manager_alert",
+      "name": "WhatsApp - Alerta Gerente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        5360,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.SUPABASE_URL.endsWith('/')) ? $env.SUPABASE_URL.slice(0, -1) : $env.SUPABASE_URL) + '/rest/v1/alertas_log' }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.alertas_payload }}",
+        "options": {}
+      },
+      "id": "http_insert_alert_logs",
+      "name": "Supabase - Inserir Alertas Log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        5600,
+        -460
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook - WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Verificar e Extrair Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar e Extrair Webhook": {
+      "main": [
+        [
+          {
+            "node": "Tem Mensagem Valida?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tem Mensagem Valida?": {
+      "main": [
+        [
+          {
+            "node": "Redis - Sessao GET",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Redis - Sessao GET": {
+      "main": [
+        [
+          {
+            "node": "Redis - Etapa GET",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis - Etapa GET": {
+      "main": [
+        [
+          {
+            "node": "Redis - Cache Produtos GET",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis - Cache Produtos GET": {
+      "main": [
+        [
+          {
+            "node": "Cache de Produtos Existe?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache de Produtos Existe?": {
+      "main": [
+        [
+          {
+            "node": "Montar Contexto IA",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Supabase - Buscar Produtos Ativos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase - Buscar Produtos Ativos": {
+      "main": [
+        [
+          {
+            "node": "Preparar Cache Produtos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Cache Produtos": {
+      "main": [
+        [
+          {
+            "node": "Redis - Cache Produtos SET",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis - Cache Produtos SET": {
+      "main": [
+        [
+          {
+            "node": "Montar Contexto IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar Contexto IA": {
+      "main": [
+        [
+          {
+            "node": "IA - Agente de Inventario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini - Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "IA - Agente de Inventario",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parser - Saida Estruturada Inventario": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "IA - Agente de Inventario",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IA - Agente de Inventario": {
+      "main": [
+        [
+          {
+            "node": "Normalizar Resultado IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar Resultado IA": {
+      "main": [
+        [
+          {
+            "node": "Switch - Status IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch - Status IA": {
+      "main": [
+        [
+          {
+            "node": "Redis - Sessao SET Pendente",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tem Produto Novo?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Redis - Sessao DEL Cancelado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Redis - Sessao SET Aguardando",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis - Sessao SET Pendente": {
+      "main": [
+        [
+          {
+            "node": "Redis - Etapa SET Confirmando",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis - Etapa SET Confirmando": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp - Resposta Pendente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis - Sessao SET Aguardando": {
+      "main": [
+        [
+          {
+            "node": "Redis - Etapa SET Aguardando",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis - Etapa SET Aguardando": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp - Resposta Aguardando Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis - Sessao DEL Cancelado": {
+      "main": [
+        [
+          {
+            "node": "Redis - Etapa DEL Cancelado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis - Etapa DEL Cancelado": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp - Resposta Cancelado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tem Produto Novo?": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp - Resposta Produto Novo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preparar Movimentacoes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WhatsApp - Resposta Produto Novo": {
+      "main": [
+        [
+          {
+            "node": "Redis - Sessao DEL Produto Novo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis - Sessao DEL Produto Novo": {
+      "main": [
+        [
+          {
+            "node": "Redis - Etapa DEL Produto Novo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Movimentacoes": {
+      "main": [
+        [
+          {
+            "node": "Supabase - Inserir Movimentacoes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase - Inserir Movimentacoes": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp - Resposta Confirmado",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Supabase - Buscar Itens Criticos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WhatsApp - Resposta Confirmado": {
+      "main": [
+        [
+          {
+            "node": "Redis - Sessao DEL Confirmado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis - Sessao DEL Confirmado": {
+      "main": [
+        [
+          {
+            "node": "Redis - Etapa DEL Confirmado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase - Buscar Itens Criticos": {
+      "main": [
+        [
+          {
+            "node": "Supabase - Buscar Alertas Hoje",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase - Buscar Alertas Hoje": {
+      "main": [
+        [
+          {
+            "node": "Montar Alertas Criticos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar Alertas Criticos": {
+      "main": [
+        [
+          {
+            "node": "Ha Alertas Novos?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ha Alertas Novos?": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp - Alerta Gerente",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "WhatsApp - Alerta Gerente": {
+      "main": [
+        [
+          {
+            "node": "Supabase - Inserir Alertas Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true
+  },
+  "tags": []
+}
