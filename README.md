@@ -1,1 +1,1 @@
-# automa-o-de-inventario-n8n-whatsapp
+# automation-de-inventario-n8n-whatsapp
